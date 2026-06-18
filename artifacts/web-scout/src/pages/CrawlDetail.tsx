@@ -3,12 +3,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Terminal, ArrowLeft, Globe, ExternalLink, Link as LinkIcon,
-  Image as ImageIcon, Database, Activity, AlertCircle, FileText,
-  Code2, Tag, Copy, Monitor, Loader2, MousePointerClick, Keyboard,
-  ScrollText, ChevronDown, Zap, Clock
+  Image as ImageIcon, Database, Activity, AlertCircle,
+  Code2, Tag, Copy, Monitor, Loader2, MousePointerClick,
+  ScrollText,
 } from "lucide-react";
 import { useGetCrawl, getGetCrawlQueryKey } from "@workspace/api-client-react";
-import { format, formatDistanceToNow } from "date-fns";
+import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,14 +29,7 @@ export default function CrawlDetail() {
   const { id } = useParams();
   const crawlId = parseInt(id || "0", 10);
 
-  const [browserSrc, setBrowserSrc] = useState<string | null>(null);
-  const [browserUrl, setBrowserUrl] = useState<string>("");
-  const [browserLoading, setBrowserLoading] = useState(false);
-  const [browserAiComment, setBrowserAiComment] = useState<string | null>(null);
-  const [clickMarker, setClickMarker] = useState<{ x: number; y: number } | null>(null);
-  const [browserError, setBrowserError] = useState<string | null>(null);
   const [activityLog, setActivityLog] = useState<LogEntry[]>([]);
-  const imgRef = useRef<HTMLImageElement>(null);
   const logBottomRef = useRef<HTMLDivElement>(null);
 
   const addLog = useCallback((entry: Omit<LogEntry, "id" | "time">) => {
@@ -49,95 +42,9 @@ export default function CrawlDetail() {
     return newEntry.id;
   }, []);
 
-  const updateLog = useCallback((id: string, patch: Partial<LogEntry>) => {
-    setActivityLog((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, ...patch } : e))
-    );
-  }, []);
-
   useEffect(() => {
     logBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activityLog]);
-
-  const takeLiveScreenshot = useCallback(async (crawlId: number, crawlUrl: string, currentUrl?: string, silent = false) => {
-    setBrowserLoading(true);
-    setBrowserAiComment(null);
-    setBrowserError(null);
-    setClickMarker(null);
-    if (!silent) {
-      addLog({ type: "system", icon: "📸", label: "Đang chụp màn hình thực tế...", detail: currentUrl || crawlUrl });
-    }
-    try {
-      const res = await fetch(`/api/crawls/${crawlId}/live-screenshot`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentUrl: currentUrl || crawlUrl }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        setBrowserError(data.error);
-        if (!silent) addLog({ type: "system", icon: "❌", label: "Lỗi chụp màn hình", detail: data.error });
-        return;
-      }
-      setBrowserSrc(`data:image/jpeg;base64,${data.screenshot}`);
-      setBrowserUrl(data.currentUrl);
-      if (!silent) addLog({ type: "system", icon: "✅", label: "Màn hình đã được cập nhật", detail: data.currentUrl });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Lỗi kết nối";
-      setBrowserError(msg);
-      if (!silent) addLog({ type: "system", icon: "❌", label: "Lỗi kết nối", detail: msg });
-    } finally {
-      setBrowserLoading(false);
-    }
-  }, [addLog]);
-
-  const handleRemoteClick = useCallback(async (e: React.MouseEvent<HTMLImageElement>, crawlId: number, crawlUrl: string) => {
-    if (!imgRef.current || browserLoading) return;
-    const rect = imgRef.current.getBoundingClientRect();
-    const xPercent = ((e.clientX - rect.left) / rect.width) * 100;
-    const yPercent = ((e.clientY - rect.top) / rect.height) * 100;
-    setClickMarker({ x: xPercent, y: yPercent });
-    setBrowserLoading(true);
-    setBrowserAiComment(null);
-    setBrowserError(null);
-
-    const logId = addLog({
-      type: "click",
-      icon: "🖱️",
-      label: `Bấm tại ${Math.round(xPercent)}% ngang, ${Math.round(yPercent)}% dọc`,
-      detail: `URL: ${browserUrl || crawlUrl}`,
-      pending: true,
-    });
-
-    try {
-      const res = await fetch(`/api/crawls/${crawlId}/remote-click`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ xPercent, yPercent, currentUrl: browserUrl || crawlUrl }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        setBrowserError(data.error);
-        updateLog(logId, { pending: false, aiResponse: `❌ Lỗi: ${data.error}` });
-        return;
-      }
-      setBrowserSrc(`data:image/jpeg;base64,${data.screenshot}`);
-      setBrowserUrl(data.currentUrl);
-      setBrowserAiComment(data.aiComment || null);
-      setClickMarker(null);
-      updateLog(logId, {
-        pending: false,
-        detail: `URL sau click: ${data.currentUrl}`,
-        aiResponse: data.aiComment || "AI không có nhận xét.",
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Lỗi kết nối";
-      setBrowserError(msg);
-      updateLog(logId, { pending: false, aiResponse: `❌ ${msg}` });
-    } finally {
-      setBrowserLoading(false);
-    }
-  }, [browserLoading, browserUrl, addLog, updateLog]);
 
   // Clone iframe interaction via postMessage
   useEffect(() => {
@@ -150,14 +57,16 @@ export default function CrawlDetail() {
       } else if (type === "scout_action") {
         const iconMap: Record<string, string> = { click: "🖱️", type: "⌨️", scroll: "📜" };
         const labelMap: Record<string, string> = { click: "Bấm vào", type: "Nhập vào", scroll: "Cuộn trang" };
-        addLog({
+        const logEntry: LogEntry = {
+          id: eventId || (Date.now() + "-" + Math.random().toString(36).slice(2, 6)),
+          time: new Date(),
           type: (action as "click" | "type" | "scroll") || "click",
           icon: iconMap[action] || "▶️",
           label: `${labelMap[action] || action}: "${elementText || elementTag || "?"}"`,
           detail: elementHref ? `→ ${elementHref}` : elementSrc ? `img: ${elementSrc}` : undefined,
           pending: true,
-          id: eventId,
-        } as Omit<LogEntry, "id" | "time"> & { id?: string });
+        };
+        setActivityLog((prev) => [...prev, logEntry]);
       } else if (type === "scout_response") {
         setActivityLog((prev) =>
           prev.map((e) => (e.id === eventId ? { ...e, pending: false, aiResponse: response } : e))
@@ -176,19 +85,6 @@ export default function CrawlDetail() {
         query.state.data?.status === "pending" ? 2000 : false,
     },
   });
-
-  useEffect(() => {
-    if (crawl?.status === "success" && !browserSrc && !browserLoading) {
-      if (crawl.hasScreenshot) {
-        setBrowserSrc(`/api/crawls/${crawl.id}/screenshot`);
-        setBrowserUrl(crawl.url);
-        addLog({ type: "system", icon: "📷", label: "Màn hình đã chụp khi crawl", detail: crawl.url });
-      } else {
-        takeLiveScreenshot(crawl.id, crawl.url, undefined, false);
-      }
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [crawl?.id, crawl?.status]);
 
   if (isLoading) {
     return (
@@ -234,13 +130,8 @@ export default function CrawlDetail() {
     "Webpack": "#8DD6F9", "Google Analytics": "#F9AB00", "GraphQL": "#E10098",
   };
 
-  const openCloneInNewTab = () => {
-    window.open(`/api/crawls/${crawl.id}/clone`, "_blank");
-  };
-
-  const copyCloneHtml = () => {
-    if (crawl.clonedHtml) navigator.clipboard.writeText(crawl.clonedHtml);
-  };
+  const openCloneInNewTab = () => window.open(`/api/crawls/${crawl.id}/clone`, "_blank");
+  const copyCloneHtml = () => { if (crawl.clonedHtml) navigator.clipboard.writeText(crawl.clonedHtml); };
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans flex flex-col">
@@ -347,7 +238,7 @@ export default function CrawlDetail() {
 
           {crawl.status === "success" && (
             <>
-              {/* ── LIVE BROWSER (luôn hiển thị đầu tiên) ── */}
+              {/* ── LIVE BROWSER (iframe trực tiếp) ── */}
               <Card className="bg-card border-border/40 overflow-hidden">
                 <div className="flex items-center gap-2 px-3 py-2 bg-card border-b border-border/40">
                   <div className="flex gap-1.5">
@@ -355,99 +246,44 @@ export default function CrawlDetail() {
                     <div className="w-3 h-3 rounded-full bg-yellow-500/60" />
                     <div className="w-3 h-3 rounded-full bg-green-500/60" />
                   </div>
-                  <button onClick={() => takeLiveScreenshot(crawl.id, crawl.url)} disabled={browserLoading}
-                    className="text-xs font-mono text-muted-foreground hover:text-primary disabled:opacity-40 px-2 py-0.5 border border-border/40 rounded transition-colors"
-                    title="Chụp lại từ đầu">
-                    {browserLoading ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "↺"}
-                  </button>
-                  <div className="flex-1 flex items-center gap-2 bg-background border border-border/40 rounded px-3 py-1">
+                  <div className="flex-1 flex items-center gap-2 bg-background border border-border/40 rounded px-3 py-1 min-w-0">
                     <Globe className="w-3 h-3 text-muted-foreground/50 shrink-0" />
-                    <span className="font-mono text-xs text-muted-foreground truncate">{browserUrl || crawl.url}</span>
+                    <span className="font-mono text-xs text-muted-foreground truncate">{crawl.url}</span>
                   </div>
-                  <button onClick={() => takeLiveScreenshot(crawl.id, crawl.url, browserUrl || crawl.url)} disabled={browserLoading}
-                    className="text-xs font-mono text-cyan-400/80 border border-cyan-400/30 bg-cyan-400/5 hover:bg-cyan-400/15 disabled:opacity-40 px-3 py-1 rounded shrink-0 transition-colors flex items-center gap-1.5">
-                    <Monitor className="w-3 h-3" /> Chụp lại
-                  </button>
                   <a href={crawl.url} target="_blank" rel="noopener noreferrer"
-                    className="text-muted-foreground hover:text-primary transition-colors">
-                    <ExternalLink className="w-3.5 h-3.5" />
+                    className="text-muted-foreground hover:text-primary transition-colors flex items-center gap-1.5 font-mono text-xs border border-border/40 px-2 py-1 rounded hover:border-primary/40 shrink-0">
+                    <ExternalLink className="w-3.5 h-3.5" /> Mở tab mới
                   </a>
                 </div>
 
                 <CardContent className="p-0">
-                  <div className="relative select-none" style={{ background: "#0a0a0f" }}>
-                    {(browserSrc || crawl.hasScreenshot) ? (
-                      <div className="relative">
-                        <img ref={imgRef}
-                          src={browserSrc ?? `/api/crawls/${crawl.id}/screenshot`}
-                          alt="Browser screenshot"
-                          className={`w-full block ${browserLoading ? "opacity-40" : "cursor-crosshair"}`}
-                          onClick={(e) => !browserLoading && handleRemoteClick(e, crawl.id, crawl.url)}
-                          draggable={false}
-                        />
-                        {clickMarker && (
-                          <div className="absolute pointer-events-none"
-                            style={{ left: `${clickMarker.x}%`, top: `${clickMarker.y}%`, transform: "translate(-50%,-50%)" }}>
-                            <span className="absolute inset-0 w-8 h-8 rounded-full border-2 border-cyan-400 animate-ping" />
-                            <span className="relative block w-8 h-8 rounded-full border-2 border-cyan-400 bg-cyan-400/20" />
-                          </div>
-                        )}
-                        {browserLoading && (
-                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60">
-                            <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-                            <div className="text-center font-mono">
-                              <p className="text-cyan-400 text-sm font-semibold">Puppeteer đang xử lý...</p>
-                              <p className="text-muted-foreground text-xs mt-1">Điều hướng trang & chụp màn hình</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center justify-center py-20 gap-4 text-muted-foreground">
-                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                        <p className="font-mono text-sm">Đang chụp màn hình...</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Status bar */}
-                  <div className="border-t border-border/40 bg-background px-4 py-2 min-h-[40px] flex items-center">
-                    {browserError ? (
-                      <div className="flex items-center gap-2 text-red-400 font-mono text-xs w-full">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                        <span>{browserError}</span>
-                      </div>
-                    ) : browserAiComment ? (
-                      <div className="flex gap-3 items-start w-full">
-                        <span className="text-base shrink-0">🤖</span>
-                        <p className="font-mono text-xs text-primary/80 leading-relaxed">{browserAiComment}</p>
-                      </div>
-                    ) : (browserSrc || crawl.hasScreenshot) && !browserLoading ? (
-                      <p className="font-mono text-xs text-muted-foreground/50 w-full text-center">
-                        Bấm vào bất kỳ đâu → Puppeteer click trang thật → AI phân tích & cập nhật màn hình
-                      </p>
-                    ) : null}
+                  <iframe
+                    src={`/api/proxy?url=${encodeURIComponent(crawl.url)}`}
+                    className="w-full block"
+                    style={{ height: "620px", border: "none" }}
+                    title={`Live: ${crawl.url}`}
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
+                  />
+                  <div className="border-t border-border/40 bg-background px-4 py-2 flex items-center justify-center">
+                    <p className="font-mono text-xs text-muted-foreground/50">
+                      Trang web trực tiếp — cuộn, bấm và tương tác bình thường trong khung này
+                    </p>
                   </div>
                 </CardContent>
               </Card>
 
-              {/* ── ACTIVITY LOG ── */}
-              <Card className="bg-card border-border/40">
-                <CardHeader className="pb-3">
-                  <CardTitle className="font-mono text-sm uppercase text-primary flex items-center gap-2">
-                    <ScrollText className="w-4 h-4" /> Nhật Ký Hoạt Động AI
-                    <span className="ml-auto text-xs text-muted-foreground font-normal">
-                      {activityLog.length} sự kiện
-                    </span>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  {activityLog.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground font-mono text-xs border border-dashed border-border/40 rounded-lg">
-                      <MousePointerClick className="w-6 h-6 mx-auto mb-2 opacity-30" />
-                      Bấm vào màn hình hoặc các phần tử trong Clone để AI ghi lại mọi thứ
-                    </div>
-                  ) : (
+              {/* ── ACTIVITY LOG (dành cho Clone tab) ── */}
+              {activityLog.length > 0 && (
+                <Card className="bg-card border-border/40">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="font-mono text-sm uppercase text-primary flex items-center gap-2">
+                      <ScrollText className="w-4 h-4" /> Nhật Ký Hoạt Động AI
+                      <span className="ml-auto text-xs text-muted-foreground font-normal">
+                        {activityLog.length} sự kiện
+                      </span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
                     <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
                       <AnimatePresence initial={false}>
                         {activityLog.map((entry) => (
@@ -483,11 +319,11 @@ export default function CrawlDetail() {
                       </AnimatePresence>
                       <div ref={logBottomRef} />
                     </div>
-                  )}
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
+              )}
 
-              {/* ── TABS: AI Report + Clone + Tech + Meta + Links + Images ── */}
+              {/* ── TABS ── */}
               <Tabs defaultValue="summary" className="w-full">
                 <TabsList className="grid grid-cols-6 mb-6 bg-card border border-border/40">
                   <TabsTrigger value="summary" className="font-mono text-xs">
