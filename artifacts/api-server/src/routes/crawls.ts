@@ -15,6 +15,25 @@ const router = Router();
 
 const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
+// ─── Chromium path resolution (must be before all Puppeteer functions) ────────
+function findChromiumPath(): string {
+  // Try PATH first (nixpkgs chromium)
+  try {
+    const p = execSync("which chromium 2>/dev/null || which chromium-browser 2>/dev/null", { encoding: "utf8" }).trim();
+    if (p) return p;
+  } catch { /* fall through */ }
+  // Known nixpkgs store path as fallback
+  return "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium";
+}
+const CHROME_EXEC: string = findChromiumPath();
+const CHROME_ARGS: string[] = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-dev-shm-usage",
+  "--disable-gpu",
+  "--headless=new",
+];
+
 // ─── Browser crawl (JS-capable, clicks expand buttons, takes screenshot) ─────
 async function fetchPageWithBrowser(url: string): Promise<{
   html: string;
@@ -75,16 +94,6 @@ async function fetchPageWithBrowser(url: string): Promise<{
     await browser?.close();
   }
 }
-
-function findChromium(): string {
-  try {
-    return execSync("which chromium 2>/dev/null || which chromium-browser 2>/dev/null", { encoding: "utf8" }).trim();
-  } catch {
-    return "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium";
-  }
-}
-const CHROME_EXEC = findChromium();
-const CHROME_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--headless=new"];
 
 // ─── Remote browser click + screenshot ───────────────────────────────────────
 async function browserRemoteClick(url: string, xPercent: number, yPercent: number): Promise<{
