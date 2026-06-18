@@ -2,8 +2,90 @@ import { Router } from "express";
 
 const router = Router();
 
-// GET /proxy?url=https://...
-// Fetches target URL, strips X-Frame-Options & CSP so it can be embedded in iframe
+// Script injected into every proxied HTML page to capture user interactions
+const TRACKER_SCRIPT = `
+<script>
+(function() {
+  function genId() { return Date.now() + '-' + Math.random().toString(36).slice(2,6); }
+
+  function getElInfo(el) {
+    var tag = (el.tagName || 'unknown').toLowerCase();
+    var text = '';
+    if (el.value !== undefined && el.value !== null && el.value !== '') {
+      text = el.value;
+    } else {
+      text = (el.innerText || el.textContent || el.alt || el.title || '').trim();
+    }
+    if (text.length > 120) text = text.slice(0, 120) + '…';
+    var href = el.href || (el.closest && el.closest('a') ? el.closest('a').href : null) || null;
+    var src  = el.src || el.currentSrc || null;
+    var placeholder = el.placeholder || null;
+    return { tag: tag, text: text || placeholder || tag, href: href, src: src };
+  }
+
+  // --- CLICK ---
+  document.addEventListener('click', function(e) {
+    var el = e.target;
+    var info = getElInfo(el);
+    window.parent.postMessage({
+      type: 'scout_action',
+      action: 'click',
+      elementTag: info.tag,
+      elementText: info.text,
+      elementHref: info.href,
+      elementSrc: info.src,
+      pageUrl: window.location.href,
+      pageTitle: document.title,
+      eventId: genId()
+    }, '*');
+  }, true);
+
+  // --- TYPING (debounced 800ms) ---
+  var inputTimer = null;
+  document.addEventListener('input', function(e) {
+    clearTimeout(inputTimer);
+    var el = e.target;
+    inputTimer = setTimeout(function() {
+      window.parent.postMessage({
+        type: 'scout_action',
+        action: 'type',
+        elementTag: (el.tagName||'input').toLowerCase(),
+        elementText: el.value || el.textContent || '',
+        elementHref: null,
+        elementSrc: null,
+        pageUrl: window.location.href,
+        pageTitle: document.title,
+        eventId: genId()
+      }, '*');
+    }, 800);
+  }, true);
+
+  // --- SCROLL (debounced 600ms) ---
+  var scrollTimer = null;
+  window.addEventListener('scroll', function() {
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(function() {
+      var pct = Math.round((window.scrollY / (document.body.scrollHeight - window.innerHeight || 1)) * 100);
+      window.parent.postMessage({
+        type: 'scout_action',
+        action: 'scroll',
+        elementTag: 'window',
+        elementText: 'Cuộn ' + pct + '% trang (' + Math.round(window.scrollY) + 'px)',
+        elementHref: null,
+        elementSrc: null,
+        pageUrl: window.location.href,
+        pageTitle: document.title,
+        eventId: genId()
+      }, '*');
+    }, 600);
+  }, true);
+
+  // Signal ready
+  window.parent.postMessage({ type: 'scout_ready', pageTitle: document.title, pageUrl: window.location.href }, '*');
+})();
+</script>`;
+
+// GET /proxy?url=https://...&crawlId=N
 router.get("/proxy", async (req, res) => {
   const target = req.query.url as string;
   if (!target) { res.status(400).send("Missing ?url= parameter"); return; }
@@ -28,7 +110,7 @@ router.get("/proxy", async (req, res) => {
 
     const contentType = upstream.headers.get("content-type") || "text/html";
 
-    // For non-HTML resources (CSS, JS, images, fonts) — proxy as-is
+    // Non-HTML assets — proxy as-is
     if (!contentType.includes("text/html")) {
       res.setHeader("content-type", contentType);
       res.setHeader("cache-control", "public, max-age=60");
@@ -39,7 +121,7 @@ router.get("/proxy", async (req, res) => {
 
     let html = await upstream.text();
 
-    // Inject <base> tag so relative URLs resolve correctly against the origin
+    // Inject <base> so relative URLs resolve to origin
     const baseTag = `<base href="${parsedUrl.origin}${parsedUrl.pathname}">`;
     if (/<head[^>]*>/i.test(html)) {
       html = html.replace(/<head[^>]*>/i, (m) => `${m}\n  ${baseTag}`);
@@ -47,29 +129,21 @@ router.get("/proxy", async (req, res) => {
       html = baseTag + html;
     }
 
-    // Rewrite absolute-path links (/foo) → proxied (/api/proxy?url=origin/foo)
-    const origin = parsedUrl.origin;
-    html = html
-      // src="/..." and href="/..." → proxy through our endpoint
-      .replace(/(src|href)=["']\/((?!\/)[^"']*?)["']/g, (_, attr, path) => {
-        return `${attr}="/api/proxy?url=${encodeURIComponent(origin + "/" + path)}"`;
-      })
-      // action="/..." on forms
-      .replace(/action=["']\/((?!\/)[^"']*?)["']/g, (_, path) => {
-        return `action="${origin}/${path}"`;
-      });
+    // Inject tracker before </body>
+    if (/<\/body>/i.test(html)) {
+      html = html.replace(/<\/body>/i, `${TRACKER_SCRIPT}\n</body>`);
+    } else {
+      html = html + TRACKER_SCRIPT;
+    }
 
-    // Strip sandbox-busting scripts (minimal — keeps page functional)
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-    // Critically: do NOT set X-Frame-Options or CSP — that's the whole point
     res.send(html);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(502).send(`
       <html><body style="font-family:monospace;background:#0a0a0f;color:#ff4444;padding:2rem;">
-        <h2>⚠ Proxy Error</h2>
-        <p>${msg}</p>
+        <h2>⚠ Proxy Error</h2><p>${msg}</p>
         <p style="color:#888">Trang này có thể chặn kết nối bên ngoài.</p>
       </body></html>
     `);
