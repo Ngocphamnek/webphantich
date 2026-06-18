@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: crawls
+    description: Web crawl operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,151 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /crawls:
+    get:
+      operationId: listCrawls
+      tags: [crawls]
+      summary: List all crawls
+      description: Returns all past crawl records, newest first
+      responses:
+        "200":
+          description: List of crawls
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Crawl"
+    post:
+      operationId: startCrawl
+      tags: [crawls]
+      summary: Start a new crawl
+      description: Fetches a URL and runs AI analysis on its content
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CrawlInput"
+      responses:
+        "201":
+          description: Crawl created and analysis complete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Crawl"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /crawls/{id}:
+    get:
+      operationId: getCrawl
+      tags: [crawls]
+      summary: Get crawl by ID
+      description: Returns a single crawl record with full details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Crawl details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Crawl"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteCrawl
+      tags: [crawls]
+      summary: Delete a crawl
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /crawls/{id}/click:
+    post:
+      operationId: clickOnScreenshot
+      tags: [crawls]
+      summary: AI vision analysis of a click on the screenshot
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClickInput"
+      responses:
+        "200":
+          description: AI vision response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InteractResponse"
+
+  /crawls/{id}/interact:
+    post:
+      operationId: interactWithCrawl
+      tags: [crawls]
+      summary: AI interaction on clone
+      description: User clicked an element in the AI clone — returns AI explanation of what would happen
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InteractInput"
+      responses:
+        "200":
+          description: AI response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InteractResponse"
+
+  /crawls/stats:
+    get:
+      operationId: getCrawlStats
+      tags: [crawls]
+      summary: Get crawl statistics
+      description: Returns summary stats — total crawls, unique domains, average links found
+      responses:
+        "200":
+          description: Stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CrawlStats"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +181,113 @@ components:
       required:
         - status
 
+    Crawl:
+      type: object
+      required: [id, url, title, status, createdAt]
+      properties:
+        id:
+          type: integer
+        url:
+          type: string
+        title:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [pending, success, error]
+        pageText:
+          type: ["string", "null"]
+        aiSummary:
+          type: ["string", "null"]
+        linksFound:
+          type: ["integer", "null"]
+        imagesFound:
+          type: ["integer", "null"]
+        links:
+          type: ["string", "null"]
+          description: JSON array of link objects
+        images:
+          type: ["string", "null"]
+          description: JSON array of image src strings
+        metaTags:
+          type: ["string", "null"]
+          description: JSON object of meta tag key-value pairs
+        techStack:
+          type: ["string", "null"]
+          description: JSON array of detected technologies
+        clonedHtml:
+          type: ["string", "null"]
+          description: AI-generated HTML clone of the page interface
+        hasScreenshot:
+          type: boolean
+          description: Whether a screenshot was captured for this crawl
+        errorMessage:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    CrawlInput:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          description: The URL to crawl and analyze
+
+    CrawlStats:
+      type: object
+      required: [totalCrawls, uniqueDomains, averageLinks, recentDomains]
+      properties:
+        totalCrawls:
+          type: integer
+        uniqueDomains:
+          type: integer
+        averageLinks:
+          type: number
+        recentDomains:
+          type: array
+          items:
+            type: string
+
+    ClickInput:
+      type: object
+      required: [xPercent, yPercent]
+      properties:
+        xPercent:
+          type: number
+          description: Horizontal click position as percentage (0-100) of image width
+        yPercent:
+          type: number
+          description: Vertical click position as percentage (0-100) of image height
+
+    InteractInput:
+      type: object
+      required: [elementTag, elementText]
+      properties:
+        elementTag:
+          type: string
+          description: HTML tag of the clicked element
+        elementText:
+          type: string
+          description: Visible text of the clicked element
+        elementHref:
+          type: string
+          description: href if element or ancestor is a link
+        elementSrc:
+          type: string
+          description: src if element is an image
+
+    InteractResponse:
+      type: object
+      required: [response]
+      properties:
+        response:
+          type: string
+          description: AI explanation of what clicking this element does
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
