@@ -4,6 +4,7 @@ import { desc, eq, sql } from "drizzle-orm";
 import * as cheerio from "cheerio";
 import { GoogleGenAI } from "@google/genai";
 import puppeteer from "puppeteer";
+import { execSync } from "child_process";
 import {
   StartCrawlBody,
   GetCrawlParams,
@@ -24,12 +25,8 @@ async function fetchPageWithBrowser(url: string): Promise<{
   try {
     browser = await puppeteer.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-      ],
+      executablePath: CHROME_EXEC,
+      args: CHROME_ARGS,
     });
     const page = await browser.newPage();
     await page.setUserAgent(
@@ -79,6 +76,16 @@ async function fetchPageWithBrowser(url: string): Promise<{
   }
 }
 
+function findChromium(): string {
+  try {
+    return execSync("which chromium 2>/dev/null || which chromium-browser 2>/dev/null", { encoding: "utf8" }).trim();
+  } catch {
+    return "/nix/store/qa9cnw4v5xkxyip6mb9kxqfq1z4x2dx1-chromium-138.0.7204.100/bin/chromium";
+  }
+}
+const CHROME_EXEC = findChromium();
+const CHROME_ARGS = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--headless=new"];
+
 // ─── Remote browser click + screenshot ───────────────────────────────────────
 async function browserRemoteClick(url: string, xPercent: number, yPercent: number): Promise<{
   screenshot: string;
@@ -86,7 +93,8 @@ async function browserRemoteClick(url: string, xPercent: number, yPercent: numbe
 }> {
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    executablePath: CHROME_EXEC,
+    args: CHROME_ARGS,
   });
   try {
     const page = await browser.newPage();
@@ -115,7 +123,8 @@ async function browserRemoteClick(url: string, xPercent: number, yPercent: numbe
 async function browserLiveScreenshot(url: string): Promise<{ screenshot: string; finalUrl: string }> {
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    executablePath: CHROME_EXEC,
+    args: CHROME_ARGS,
   });
   try {
     const page = await browser.newPage();

@@ -1,17 +1,29 @@
 import { useParams, Link } from "wouter";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Terminal, ArrowLeft, Globe, ExternalLink, Link as LinkIcon,
   Image as ImageIcon, Database, Activity, AlertCircle, FileText,
-  Code2, Tag, Copy, Monitor, Loader2
+  Code2, Tag, Copy, Monitor, Loader2, MousePointerClick, Keyboard,
+  ScrollText, ChevronDown, Zap, Clock
 } from "lucide-react";
 import { useGetCrawl, getGetCrawlQueryKey } from "@workspace/api-client-react";
-import { format } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+interface LogEntry {
+  id: string;
+  time: Date;
+  type: "click" | "type" | "scroll" | "ai_response" | "system";
+  icon: string;
+  label: string;
+  detail?: string;
+  aiResponse?: string;
+  pending?: boolean;
+}
 
 export default function CrawlDetail() {
   const { id } = useParams();
@@ -23,13 +35,38 @@ export default function CrawlDetail() {
   const [browserAiComment, setBrowserAiComment] = useState<string | null>(null);
   const [clickMarker, setClickMarker] = useState<{ x: number; y: number } | null>(null);
   const [browserError, setBrowserError] = useState<string | null>(null);
+  const [activityLog, setActivityLog] = useState<LogEntry[]>([]);
   const imgRef = useRef<HTMLImageElement>(null);
+  const logBottomRef = useRef<HTMLDivElement>(null);
 
-  const takeLiveScreenshot = useCallback(async (crawlId: number, crawlUrl: string, currentUrl?: string) => {
+  const addLog = useCallback((entry: Omit<LogEntry, "id" | "time">) => {
+    const newEntry: LogEntry = {
+      ...entry,
+      id: Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+      time: new Date(),
+    };
+    setActivityLog((prev) => [...prev, newEntry]);
+    return newEntry.id;
+  }, []);
+
+  const updateLog = useCallback((id: string, patch: Partial<LogEntry>) => {
+    setActivityLog((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, ...patch } : e))
+    );
+  }, []);
+
+  useEffect(() => {
+    logBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [activityLog]);
+
+  const takeLiveScreenshot = useCallback(async (crawlId: number, crawlUrl: string, currentUrl?: string, silent = false) => {
     setBrowserLoading(true);
     setBrowserAiComment(null);
     setBrowserError(null);
     setClickMarker(null);
+    if (!silent) {
+      addLog({ type: "system", icon: "📸", label: "Đang chụp màn hình thực tế...", detail: currentUrl || crawlUrl });
+    }
     try {
       const res = await fetch(`/api/crawls/${crawlId}/live-screenshot`, {
         method: "POST",
@@ -37,15 +74,22 @@ export default function CrawlDetail() {
         body: JSON.stringify({ currentUrl: currentUrl || crawlUrl }),
       });
       const data = await res.json();
-      if (data.error) { setBrowserError(data.error); return; }
+      if (data.error) {
+        setBrowserError(data.error);
+        if (!silent) addLog({ type: "system", icon: "❌", label: "Lỗi chụp màn hình", detail: data.error });
+        return;
+      }
       setBrowserSrc(`data:image/jpeg;base64,${data.screenshot}`);
       setBrowserUrl(data.currentUrl);
+      if (!silent) addLog({ type: "system", icon: "✅", label: "Màn hình đã được cập nhật", detail: data.currentUrl });
     } catch (err) {
-      setBrowserError(err instanceof Error ? err.message : "Lỗi kết nối");
+      const msg = err instanceof Error ? err.message : "Lỗi kết nối";
+      setBrowserError(msg);
+      if (!silent) addLog({ type: "system", icon: "❌", label: "Lỗi kết nối", detail: msg });
     } finally {
       setBrowserLoading(false);
     }
-  }, []);
+  }, [addLog]);
 
   const handleRemoteClick = useCallback(async (e: React.MouseEvent<HTMLImageElement>, crawlId: number, crawlUrl: string) => {
     if (!imgRef.current || browserLoading) return;
@@ -56,6 +100,15 @@ export default function CrawlDetail() {
     setBrowserLoading(true);
     setBrowserAiComment(null);
     setBrowserError(null);
+
+    const logId = addLog({
+      type: "click",
+      icon: "🖱️",
+      label: `Bấm tại ${Math.round(xPercent)}% ngang, ${Math.round(yPercent)}% dọc`,
+      detail: `URL: ${browserUrl || crawlUrl}`,
+      pending: true,
+    });
+
     try {
       const res = await fetch(`/api/crawls/${crawlId}/remote-click`, {
         method: "POST",
@@ -63,17 +116,57 @@ export default function CrawlDetail() {
         body: JSON.stringify({ xPercent, yPercent, currentUrl: browserUrl || crawlUrl }),
       });
       const data = await res.json();
-      if (data.error) { setBrowserError(data.error); return; }
+      if (data.error) {
+        setBrowserError(data.error);
+        updateLog(logId, { pending: false, aiResponse: `❌ Lỗi: ${data.error}` });
+        return;
+      }
       setBrowserSrc(`data:image/jpeg;base64,${data.screenshot}`);
       setBrowserUrl(data.currentUrl);
       setBrowserAiComment(data.aiComment || null);
       setClickMarker(null);
+      updateLog(logId, {
+        pending: false,
+        detail: `URL sau click: ${data.currentUrl}`,
+        aiResponse: data.aiComment || "AI không có nhận xét.",
+      });
     } catch (err) {
-      setBrowserError(err instanceof Error ? err.message : "Lỗi kết nối");
+      const msg = err instanceof Error ? err.message : "Lỗi kết nối";
+      setBrowserError(msg);
+      updateLog(logId, { pending: false, aiResponse: `❌ ${msg}` });
     } finally {
       setBrowserLoading(false);
     }
-  }, [browserLoading, browserUrl]);
+  }, [browserLoading, browserUrl, addLog, updateLog]);
+
+  // Clone iframe interaction via postMessage
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (!e.data || typeof e.data !== "object") return;
+      const { type, action, elementTag, elementText, elementHref, elementSrc, response, eventId } = e.data;
+
+      if (type === "scout_ready") {
+        addLog({ type: "system", icon: "🟢", label: "Clone AI sẵn sàng — bấm vào bất kỳ phần tử nào" });
+      } else if (type === "scout_action") {
+        const iconMap: Record<string, string> = { click: "🖱️", type: "⌨️", scroll: "📜" };
+        const labelMap: Record<string, string> = { click: "Bấm vào", type: "Nhập vào", scroll: "Cuộn trang" };
+        addLog({
+          type: (action as "click" | "type" | "scroll") || "click",
+          icon: iconMap[action] || "▶️",
+          label: `${labelMap[action] || action}: "${elementText || elementTag || "?"}"`,
+          detail: elementHref ? `→ ${elementHref}` : elementSrc ? `img: ${elementSrc}` : undefined,
+          pending: true,
+          id: eventId,
+        } as Omit<LogEntry, "id" | "time"> & { id?: string });
+      } else if (type === "scout_response") {
+        setActivityLog((prev) =>
+          prev.map((e) => (e.id === eventId ? { ...e, pending: false, aiResponse: response } : e))
+        );
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [addLog]);
 
   const { data: crawl, isLoading, isError } = useGetCrawl(crawlId, {
     query: {
@@ -89,8 +182,9 @@ export default function CrawlDetail() {
       if (crawl.hasScreenshot) {
         setBrowserSrc(`/api/crawls/${crawl.id}/screenshot`);
         setBrowserUrl(crawl.url);
+        addLog({ type: "system", icon: "📷", label: "Màn hình đã chụp khi crawl", detail: crawl.url });
       } else {
-        takeLiveScreenshot(crawl.id, crawl.url);
+        takeLiveScreenshot(crawl.id, crawl.url, undefined, false);
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -176,6 +270,7 @@ export default function CrawlDetail() {
           transition={{ duration: 0.3 }}
           className="space-y-6"
         >
+          {/* Header Card */}
           <Card className="bg-card border-border/40 overflow-hidden relative">
             {crawl.status === "pending" && <div className="absolute top-0 left-0 w-full h-1 bg-primary animate-pulse" />}
             {crawl.status === "error" && <div className="absolute top-0 left-0 w-full h-1 bg-destructive" />}
@@ -191,12 +286,8 @@ export default function CrawlDetail() {
                     <div>
                       <h1 className="text-2xl font-bold tracking-tight break-words">{crawl.title || crawl.url}</h1>
                       <div className="flex items-center gap-2 text-muted-foreground mt-1">
-                        <a
-                          href={crawl.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-sm font-mono hover:text-primary transition-colors flex items-center gap-1 break-all"
-                        >
+                        <a href={crawl.url} target="_blank" rel="noreferrer"
+                          className="text-sm font-mono hover:text-primary transition-colors flex items-center gap-1 break-all">
                           {crawl.url} <ExternalLink className="w-3 h-3" />
                         </a>
                       </div>
@@ -206,15 +297,8 @@ export default function CrawlDetail() {
                   {parsedTech.length > 0 && (
                     <div className="flex flex-wrap gap-2">
                       {parsedTech.map((t) => (
-                        <span
-                          key={t}
-                          className="px-2 py-0.5 rounded text-xs font-mono font-bold border"
-                          style={{
-                            color: techColors[t] || "#00e5ff",
-                            borderColor: `${techColors[t] || "#00e5ff"}40`,
-                            backgroundColor: `${techColors[t] || "#00e5ff"}10`,
-                          }}
-                        >
+                        <span key={t} className="px-2 py-0.5 rounded text-xs font-mono font-bold border"
+                          style={{ color: techColors[t] || "#00e5ff", borderColor: `${techColors[t] || "#00e5ff"}40`, backgroundColor: `${techColors[t] || "#00e5ff"}10` }}>
                           {t}
                         </span>
                       ))}
@@ -224,26 +308,15 @@ export default function CrawlDetail() {
                   <div className="flex flex-wrap gap-4 text-xs font-mono text-muted-foreground pt-4 border-t border-border/40">
                     <span className="flex items-center gap-1">
                       <Activity className="w-3 h-3" /> STATUS:{" "}
-                      <span className={
-                        crawl.status === "success" ? "text-primary" :
-                        crawl.status === "error" ? "text-destructive" : "text-primary animate-pulse"
-                      }>
+                      <span className={crawl.status === "success" ? "text-primary" : crawl.status === "error" ? "text-destructive" : "text-primary animate-pulse"}>
                         {crawl.status.toUpperCase()}
                       </span>
                     </span>
                     <span className="flex items-center gap-1">
-                      <Database className="w-3 h-3" /> DATE: {format(new Date(crawl.createdAt), "yyyy-MM-dd HH:mm:ss")}
+                      <Database className="w-3 h-3" /> {format(new Date(crawl.createdAt), "yyyy-MM-dd HH:mm:ss")}
                     </span>
-                    {crawl.linksFound != null && (
-                      <span className="flex items-center gap-1">
-                        <LinkIcon className="w-3 h-3" /> {crawl.linksFound} LINKS
-                      </span>
-                    )}
-                    {crawl.imagesFound != null && (
-                      <span className="flex items-center gap-1">
-                        <ImageIcon className="w-3 h-3" /> {crawl.imagesFound} IMAGES
-                      </span>
-                    )}
+                    {crawl.linksFound != null && <span className="flex items-center gap-1"><LinkIcon className="w-3 h-3" /> {crawl.linksFound} LINKS</span>}
+                    {crawl.imagesFound != null && <span className="flex items-center gap-1"><ImageIcon className="w-3 h-3" /> {crawl.imagesFound} IMAGES</span>}
                   </div>
                 </div>
               </div>
@@ -256,7 +329,7 @@ export default function CrawlDetail() {
                 <AlertCircle className="w-6 h-6 shrink-0" />
                 <div>
                   <h3 className="font-mono font-bold uppercase mb-1">Infiltration Failed</h3>
-                  <p className="font-mono text-sm">{crawl.errorMessage || "Unknown error encountered during execution."}</p>
+                  <p className="font-mono text-sm">{crawl.errorMessage || "Unknown error encountered."}</p>
                 </div>
               </CardContent>
             </Card>
@@ -267,317 +340,335 @@ export default function CrawlDetail() {
               <CardContent className="p-12 flex flex-col items-center justify-center text-center text-muted-foreground">
                 <Terminal className="w-8 h-8 mb-4 animate-pulse text-primary" />
                 <h3 className="font-mono mb-2 text-foreground">ANALYSIS IN PROGRESS</h3>
-                <p className="font-mono text-sm max-w-md">The agent is extracting data, building tech profile, and generating insights + interface clone...</p>
+                <p className="font-mono text-sm max-w-md">Đang thu thập dữ liệu, xây dựng hồ sơ kỹ thuật và tạo bản clone giao diện...</p>
               </CardContent>
             </Card>
           )}
 
           {crawl.status === "success" && (
-            <Tabs defaultValue="screenshot" className="w-full">
-              <TabsList className="grid grid-cols-7 mb-6 bg-card border border-border/40">
-                <TabsTrigger value="screenshot" className="font-mono text-xs">
-                  <Monitor className="w-3 h-3 mr-1" />Màn hình
-                </TabsTrigger>
-                <TabsTrigger value="summary" className="font-mono text-xs">
-                  <Terminal className="w-3 h-3 mr-1" />AI Report
-                </TabsTrigger>
-                <TabsTrigger value="clone" className="font-mono text-xs">
-                  <Monitor className="w-3 h-3 mr-1" />Clone
-                </TabsTrigger>
-                <TabsTrigger value="tech" className="font-mono text-xs">
-                  <Code2 className="w-3 h-3 mr-1" />Tech
-                </TabsTrigger>
-                <TabsTrigger value="meta" className="font-mono text-xs">
-                  <Tag className="w-3 h-3 mr-1" />Meta
-                </TabsTrigger>
-                <TabsTrigger value="links" className="font-mono text-xs">
-                  <LinkIcon className="w-3 h-3 mr-1" />Links ({crawl.linksFound || 0})
-                </TabsTrigger>
-                <TabsTrigger value="images" className="font-mono text-xs">
-                  <ImageIcon className="w-3 h-3 mr-1" />Images ({crawl.imagesFound || 0})
-                </TabsTrigger>
-              </TabsList>
+            <>
+              {/* ── LIVE BROWSER (luôn hiển thị đầu tiên) ── */}
+              <Card className="bg-card border-border/40 overflow-hidden">
+                <div className="flex items-center gap-2 px-3 py-2 bg-card border-b border-border/40">
+                  <div className="flex gap-1.5">
+                    <div className="w-3 h-3 rounded-full bg-red-500/60" />
+                    <div className="w-3 h-3 rounded-full bg-yellow-500/60" />
+                    <div className="w-3 h-3 rounded-full bg-green-500/60" />
+                  </div>
+                  <button onClick={() => takeLiveScreenshot(crawl.id, crawl.url)} disabled={browserLoading}
+                    className="text-xs font-mono text-muted-foreground hover:text-primary disabled:opacity-40 px-2 py-0.5 border border-border/40 rounded transition-colors"
+                    title="Chụp lại từ đầu">
+                    {browserLoading ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "↺"}
+                  </button>
+                  <div className="flex-1 flex items-center gap-2 bg-background border border-border/40 rounded px-3 py-1">
+                    <Globe className="w-3 h-3 text-muted-foreground/50 shrink-0" />
+                    <span className="font-mono text-xs text-muted-foreground truncate">{browserUrl || crawl.url}</span>
+                  </div>
+                  <button onClick={() => takeLiveScreenshot(crawl.id, crawl.url, browserUrl || crawl.url)} disabled={browserLoading}
+                    className="text-xs font-mono text-cyan-400/80 border border-cyan-400/30 bg-cyan-400/5 hover:bg-cyan-400/15 disabled:opacity-40 px-3 py-1 rounded shrink-0 transition-colors flex items-center gap-1.5">
+                    <Monitor className="w-3 h-3" /> Chụp lại
+                  </button>
+                  <a href={crawl.url} target="_blank" rel="noopener noreferrer"
+                    className="text-muted-foreground hover:text-primary transition-colors">
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                </div>
 
-              <TabsContent value="screenshot" className="mt-0">
-                <Card className="bg-card border-border/40 overflow-hidden">
-                  <div className="flex items-center gap-2 px-3 py-2 bg-card border-b border-border/40">
-                    <button
-                      onClick={() => takeLiveScreenshot(crawl.id, crawl.url)}
-                      disabled={browserLoading}
-                      className="text-xs font-mono text-muted-foreground hover:text-primary disabled:opacity-40 transition-colors px-2 py-1 border border-border/40 rounded"
-                      title="Chụp lại từ đầu"
-                    >{browserLoading ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "↺"}</button>
-                    <div className="flex-1 flex items-center gap-2 bg-background border border-border/40 rounded px-3 py-1">
-                      <Globe className="w-3 h-3 text-muted-foreground/50 shrink-0" />
-                      <span className="font-mono text-xs text-muted-foreground truncate">
-                        {browserUrl || crawl.url}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => takeLiveScreenshot(crawl.id, crawl.url, browserUrl || crawl.url)}
-                      disabled={browserLoading}
-                      className="text-xs font-mono text-cyan-400/80 border border-cyan-400/30 bg-cyan-400/5 hover:bg-cyan-400/15 disabled:opacity-40 px-3 py-1 rounded shrink-0 transition-colors flex items-center gap-1.5"
-                    >
-                      <Monitor className="w-3 h-3" />
-                      Chụp lại
-                    </button>
-                    <a href={crawl.url} target="_blank" rel="noopener noreferrer"
-                      className="text-muted-foreground hover:text-primary transition-colors" title="Mở tab mới">
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
+                <CardContent className="p-0">
+                  <div className="relative select-none" style={{ background: "#0a0a0f" }}>
+                    {(browserSrc || crawl.hasScreenshot) ? (
+                      <div className="relative">
+                        <img ref={imgRef}
+                          src={browserSrc ?? `/api/crawls/${crawl.id}/screenshot`}
+                          alt="Browser screenshot"
+                          className={`w-full block ${browserLoading ? "opacity-40" : "cursor-crosshair"}`}
+                          onClick={(e) => !browserLoading && handleRemoteClick(e, crawl.id, crawl.url)}
+                          draggable={false}
+                        />
+                        {clickMarker && (
+                          <div className="absolute pointer-events-none"
+                            style={{ left: `${clickMarker.x}%`, top: `${clickMarker.y}%`, transform: "translate(-50%,-50%)" }}>
+                            <span className="absolute inset-0 w-8 h-8 rounded-full border-2 border-cyan-400 animate-ping" />
+                            <span className="relative block w-8 h-8 rounded-full border-2 border-cyan-400 bg-cyan-400/20" />
+                          </div>
+                        )}
+                        {browserLoading && (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60">
+                            <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
+                            <div className="text-center font-mono">
+                              <p className="text-cyan-400 text-sm font-semibold">Puppeteer đang xử lý...</p>
+                              <p className="text-muted-foreground text-xs mt-1">Điều hướng trang & chụp màn hình</p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-20 gap-4 text-muted-foreground">
+                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                        <p className="font-mono text-sm">Đang chụp màn hình...</p>
+                      </div>
+                    )}
                   </div>
 
-                  <CardContent className="p-0">
-                    <div className="relative select-none" style={{ background: "#0a0a0f" }}>
-                      {(browserSrc || crawl.hasScreenshot) ? (
-                        <div className="relative">
-                          <img
-                            ref={imgRef}
-                            src={browserSrc ?? `/api/crawls/${crawl.id}/screenshot`}
-                            alt="Browser"
-                            className={`w-full block ${browserLoading ? "opacity-40" : "cursor-crosshair"}`}
-                            onClick={(e) => !browserLoading && handleRemoteClick(e, crawl.id, crawl.url)}
-                            draggable={false}
-                          />
+                  {/* Status bar */}
+                  <div className="border-t border-border/40 bg-background px-4 py-2 min-h-[40px] flex items-center">
+                    {browserError ? (
+                      <div className="flex items-center gap-2 text-red-400 font-mono text-xs w-full">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{browserError}</span>
+                      </div>
+                    ) : browserAiComment ? (
+                      <div className="flex gap-3 items-start w-full">
+                        <span className="text-base shrink-0">🤖</span>
+                        <p className="font-mono text-xs text-primary/80 leading-relaxed">{browserAiComment}</p>
+                      </div>
+                    ) : (browserSrc || crawl.hasScreenshot) && !browserLoading ? (
+                      <p className="font-mono text-xs text-muted-foreground/50 w-full text-center">
+                        Bấm vào bất kỳ đâu → Puppeteer click trang thật → AI phân tích & cập nhật màn hình
+                      </p>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
 
-                          {clickMarker && (
-                            <div className="absolute pointer-events-none" style={{ left: `${clickMarker.x}%`, top: `${clickMarker.y}%`, transform: "translate(-50%,-50%)" }}>
-                              <span className="absolute inset-0 w-8 h-8 rounded-full border-2 border-cyan-400 animate-ping" />
-                              <span className="relative block w-8 h-8 rounded-full border-2 border-cyan-400 bg-cyan-400/20" />
-                            </div>
-                          )}
-
-                          {browserLoading && (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60">
-                              <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
-                              <div className="text-center font-mono">
-                                <p className="text-cyan-400 text-sm font-semibold">Puppeteer đang xử lý...</p>
-                                <p className="text-muted-foreground text-xs mt-1">Điều hướng trang & chụp màn hình</p>
+              {/* ── ACTIVITY LOG ── */}
+              <Card className="bg-card border-border/40">
+                <CardHeader className="pb-3">
+                  <CardTitle className="font-mono text-sm uppercase text-primary flex items-center gap-2">
+                    <ScrollText className="w-4 h-4" /> Nhật Ký Hoạt Động AI
+                    <span className="ml-auto text-xs text-muted-foreground font-normal">
+                      {activityLog.length} sự kiện
+                    </span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  {activityLog.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground font-mono text-xs border border-dashed border-border/40 rounded-lg">
+                      <MousePointerClick className="w-6 h-6 mx-auto mb-2 opacity-30" />
+                      Bấm vào màn hình hoặc các phần tử trong Clone để AI ghi lại mọi thứ
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                      <AnimatePresence initial={false}>
+                        {activityLog.map((entry) => (
+                          <motion.div key={entry.id}
+                            initial={{ opacity: 0, x: -8 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            className="flex gap-3 p-3 rounded-lg bg-background border border-border/40 text-xs font-mono">
+                            <span className="text-base shrink-0 leading-none mt-0.5">{entry.icon}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-start justify-between gap-2">
+                                <span className="text-foreground font-semibold leading-snug">{entry.label}</span>
+                                <span className="text-muted-foreground/50 shrink-0 text-[10px]">
+                                  {format(entry.time, "HH:mm:ss")}
+                                </span>
                               </div>
+                              {entry.detail && (
+                                <p className="text-muted-foreground mt-0.5 truncate">{entry.detail}</p>
+                              )}
+                              {entry.pending && (
+                                <div className="flex items-center gap-1.5 mt-1.5 text-cyan-400">
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  <span>AI đang phân tích...</span>
+                                </div>
+                              )}
+                              {!entry.pending && entry.aiResponse && (
+                                <div className="mt-2 p-2 bg-primary/5 border border-primary/20 rounded text-primary/80 leading-relaxed">
+                                  🤖 {entry.aiResponse}
+                                </div>
+                              )}
                             </div>
-                          )}
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
+                      <div ref={logBottomRef} />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* ── TABS: AI Report + Clone + Tech + Meta + Links + Images ── */}
+              <Tabs defaultValue="summary" className="w-full">
+                <TabsList className="grid grid-cols-6 mb-6 bg-card border border-border/40">
+                  <TabsTrigger value="summary" className="font-mono text-xs">
+                    <Terminal className="w-3 h-3 mr-1" />AI Report
+                  </TabsTrigger>
+                  <TabsTrigger value="clone" className="font-mono text-xs">
+                    <Monitor className="w-3 h-3 mr-1" />Clone
+                  </TabsTrigger>
+                  <TabsTrigger value="tech" className="font-mono text-xs">
+                    <Code2 className="w-3 h-3 mr-1" />Tech
+                  </TabsTrigger>
+                  <TabsTrigger value="meta" className="font-mono text-xs">
+                    <Tag className="w-3 h-3 mr-1" />Meta
+                  </TabsTrigger>
+                  <TabsTrigger value="links" className="font-mono text-xs">
+                    <LinkIcon className="w-3 h-3 mr-1" />Links ({crawl.linksFound || 0})
+                  </TabsTrigger>
+                  <TabsTrigger value="images" className="font-mono text-xs">
+                    <ImageIcon className="w-3 h-3 mr-1" />Images ({crawl.imagesFound || 0})
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="summary">
+                  <Card className="bg-card border-border/40">
+                    <CardHeader>
+                      <CardTitle className="font-mono text-sm uppercase text-primary flex items-center gap-2">
+                        <Terminal className="w-4 h-4" /> AI Intelligence Report
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {crawl.aiSummary ? (
+                        <div className="whitespace-pre-wrap text-sm text-muted-foreground leading-relaxed font-mono">
+                          {crawl.aiSummary}
                         </div>
                       ) : (
-                        <div className="flex flex-col items-center justify-center py-20 gap-4 text-muted-foreground">
-                          <Monitor className="w-12 h-12 opacity-20" />
-                          <div className="text-center font-mono">
-                            <p className="text-sm">Chưa có ảnh màn hình</p>
-                            <p className="text-xs opacity-60 mt-1">Crawl lại URL này để chụp màn hình ban đầu</p>
-                          </div>
-                        </div>
+                        <span className="text-muted-foreground font-mono">No summary available.</span>
                       )}
-                    </div>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
 
-                    <div className="border-t border-border/40 bg-background">
-                      {browserError ? (
-                        <div className="px-4 py-3 flex items-center gap-2 text-red-400 font-mono text-xs">
-                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                          <span>{browserError}</span>
+                <TabsContent value="clone">
+                  <Card className="bg-card border-border/40">
+                    <CardHeader>
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="font-mono text-sm uppercase text-primary flex items-center gap-2">
+                          <Monitor className="w-4 h-4" /> AI Interface Clone
+                          <span className="text-xs font-normal text-cyan-400 ml-2 border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 rounded">BẤM ĐỂ AI PHÂN TÍCH</span>
+                        </CardTitle>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" className="font-mono text-xs" onClick={copyCloneHtml}>
+                            <Copy className="w-3 h-3 mr-1" /> Copy HTML
+                          </Button>
+                          <Button variant="outline" size="sm" className="font-mono text-xs" onClick={openCloneInNewTab}>
+                            <ExternalLink className="w-3 h-3 mr-1" /> Open
+                          </Button>
                         </div>
-                      ) : browserAiComment ? (
-                        <div className="px-4 py-3 flex gap-3 items-start">
-                          <span className="text-lg shrink-0">🤖</span>
-                          <p className="font-mono text-xs text-primary/80 leading-relaxed">{browserAiComment}</p>
-                        </div>
-                      ) : (browserSrc || crawl.hasScreenshot) && !browserLoading ? (
-                        <p className="px-4 py-3 font-mono text-xs text-muted-foreground/50 text-center">
-                          Bấm vào bất kỳ đâu trên màn hình — Puppeteer sẽ click trang thật và cập nhật màn hình
-                        </p>
-                      ) : null}
-                    </div>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="summary">
-                <Card className="bg-card border-border/40">
-                  <CardHeader>
-                    <CardTitle className="font-mono text-sm uppercase text-primary flex items-center gap-2">
-                      <Terminal className="w-4 h-4" /> AI Intelligence Report
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="max-w-none">
-                    {crawl.aiSummary ? (
-                      <div className="prose prose-invert prose-sm max-w-none prose-p:leading-relaxed prose-a:text-primary prose-headings:font-mono prose-headings:text-primary prose-strong:text-foreground prose-li:text-muted-foreground whitespace-pre-wrap text-sm text-muted-foreground leading-relaxed">
-                        {crawl.aiSummary}
                       </div>
-                    ) : (
-                      <span className="text-muted-foreground font-mono">No summary available.</span>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
+                      <p className="text-xs text-muted-foreground font-mono mt-1">
+                        Bấm vào bất kỳ phần tử nào trong clone — AI sẽ giải thích chức năng và ghi vào Nhật Ký
+                      </p>
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      {crawl.clonedHtml ? (
+                        <div className="border-t border-border/40">
+                          <iframe
+                            src={`/api/crawls/${crawl.id}/clone`}
+                            className="w-full rounded-b-lg"
+                            style={{ height: "650px", border: "none" }}
+                            sandbox="allow-scripts allow-same-origin allow-forms"
+                            title="AI Interface Clone"
+                          />
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-muted-foreground font-mono text-sm p-6">Clone chưa được tạo.</div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
 
-              <TabsContent value="clone">
-                <Card className="bg-card border-border/40">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="font-mono text-sm uppercase text-primary flex items-center gap-2">
-                        <Monitor className="w-4 h-4" /> AI Interface Clone
-                        <span className="text-xs font-normal text-cyan-400 ml-2 border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 rounded">
-                          BẤM ĐỂ AI PHÂN TÍCH
-                        </span>
+                <TabsContent value="tech">
+                  <Card className="bg-card border-border/40">
+                    <CardHeader>
+                      <CardTitle className="font-mono text-sm uppercase text-muted-foreground flex items-center gap-2">
+                        <Code2 className="w-4 h-4" /> Technology Stack
                       </CardTitle>
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm" className="font-mono text-xs" onClick={copyCloneHtml}>
-                          <Copy className="w-3 h-3 mr-1" /> Copy HTML
-                        </Button>
-                        <Button variant="outline" size="sm" className="font-mono text-xs" onClick={openCloneInNewTab}>
-                          <ExternalLink className="w-3 h-3 mr-1" /> Open
-                        </Button>
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground font-mono mt-1">
-                      Bấm vào bất kỳ phần tử nào trong clone bên dưới — AI sẽ giải thích chức năng của nó
-                    </p>
-                  </CardHeader>
-                  <CardContent className="p-0">
-                    {crawl.clonedHtml ? (
-                      <div className="border-t border-border/40">
-                        <iframe
-                          src={`/api/crawls/${crawl.id}/clone`}
-                          className="w-full rounded-b-lg"
-                          style={{ height: "650px", border: "none" }}
-                          sandbox="allow-scripts allow-same-origin allow-forms"
-                          title="AI Interface Clone"
-                        />
-                      </div>
-                    ) : (
-                      <div className="text-center py-8 text-muted-foreground font-mono text-sm p-6">
-                        Clone chưa được tạo.
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
+                    </CardHeader>
+                    <CardContent>
+                      {parsedTech.length > 0 ? (
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                          {parsedTech.map((t) => (
+                            <div key={t} className="flex items-center gap-3 p-4 rounded-lg border"
+                              style={{ borderColor: `${techColors[t] || "#00e5ff"}30`, backgroundColor: `${techColors[t] || "#00e5ff"}08` }}>
+                              <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: techColors[t] || "#00e5ff" }} />
+                              <span className="font-mono text-sm font-semibold" style={{ color: techColors[t] || "#00e5ff" }}>{t}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-muted-foreground font-mono text-sm">No technologies detected.</div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
 
-              <TabsContent value="tech">
-                <Card className="bg-card border-border/40">
-                  <CardHeader>
-                    <CardTitle className="font-mono text-sm uppercase text-muted-foreground flex items-center gap-2">
-                      <Code2 className="w-4 h-4" /> Technology Stack
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {parsedTech.length > 0 ? (
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                        {parsedTech.map((t) => (
-                          <div
-                            key={t}
-                            className="flex items-center gap-3 p-4 rounded-lg border"
-                            style={{
-                              borderColor: `${techColors[t] || "#00e5ff"}30`,
-                              backgroundColor: `${techColors[t] || "#00e5ff"}08`,
-                            }}
-                          >
-                            <div
-                              className="w-3 h-3 rounded-full shrink-0"
-                              style={{ backgroundColor: techColors[t] || "#00e5ff" }}
-                            />
-                            <span
-                              className="font-mono text-sm font-semibold"
-                              style={{ color: techColors[t] || "#00e5ff" }}
-                            >
-                              {t}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-center py-8 text-muted-foreground font-mono text-sm">
-                        No technologies detected.
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
+                <TabsContent value="meta">
+                  <Card className="bg-card border-border/40">
+                    <CardHeader>
+                      <CardTitle className="font-mono text-sm uppercase text-muted-foreground flex items-center gap-2">
+                        <Tag className="w-4 h-4" /> Meta Tags & SEO Data
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {Object.keys(parsedMeta).length > 0 ? (
+                        <div className="space-y-2">
+                          {Object.entries(parsedMeta).map(([key, value]) => (
+                            <div key={key} className="flex flex-col sm:flex-row gap-2 p-3 bg-background border border-border/40 rounded-md">
+                              <span className="font-mono text-xs text-primary font-bold shrink-0 sm:w-48">{key}</span>
+                              <span className="font-mono text-xs text-muted-foreground break-all">{value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-muted-foreground font-mono text-sm">No meta tags found.</div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
 
-              <TabsContent value="meta">
-                <Card className="bg-card border-border/40">
-                  <CardHeader>
-                    <CardTitle className="font-mono text-sm uppercase text-muted-foreground flex items-center gap-2">
-                      <Tag className="w-4 h-4" /> Meta Tags & SEO Data
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {Object.keys(parsedMeta).length > 0 ? (
-                      <div className="space-y-2">
-                        {Object.entries(parsedMeta).map(([key, value]) => (
-                          <div key={key} className="flex flex-col sm:flex-row gap-2 p-3 bg-background border border-border/40 rounded-md">
-                            <span className="font-mono text-xs text-primary font-bold shrink-0 sm:w-48">{key}</span>
-                            <span className="font-mono text-xs text-muted-foreground break-all">{value}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-center py-8 text-muted-foreground font-mono text-sm">
-                        No meta tags found.
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
+                <TabsContent value="links">
+                  <Card className="bg-card border-border/40">
+                    <CardHeader>
+                      <CardTitle className="font-mono text-sm uppercase text-muted-foreground flex items-center gap-2">
+                        <LinkIcon className="w-4 h-4" /> Discovered Links
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {parsedLinks.length > 0 ? (
+                        <div className="grid gap-2">
+                          {parsedLinks.map((link, i) => (
+                            <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 bg-background border border-border/40 rounded-md">
+                              <span className="text-sm font-medium truncate flex-1">{link.text || "Unnamed Link"}</span>
+                              <a href={link.href} target="_blank" rel="noreferrer"
+                                className="text-xs font-mono text-primary truncate flex-1 hover:underline">{link.href}</a>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-muted-foreground font-mono text-sm">No links extracted.</div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
 
-              <TabsContent value="links">
-                <Card className="bg-card border-border/40">
-                  <CardHeader>
-                    <CardTitle className="font-mono text-sm uppercase text-muted-foreground flex items-center gap-2">
-                      <LinkIcon className="w-4 h-4" /> Discovered Links
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {parsedLinks.length > 0 ? (
-                      <div className="grid gap-2">
-                        {parsedLinks.map((link, i) => (
-                          <div key={i} className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 bg-background border border-border/40 rounded-md">
-                            <span className="text-sm font-medium truncate flex-1">{link.text || "Unnamed Link"}</span>
-                            <a
-                              href={link.href}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-xs font-mono text-primary truncate flex-1 hover:underline"
-                            >
-                              {link.href}
-                            </a>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-center py-8 text-muted-foreground font-mono text-sm">No links extracted.</div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="images">
-                <Card className="bg-card border-border/40">
-                  <CardHeader>
-                    <CardTitle className="font-mono text-sm uppercase text-muted-foreground flex items-center gap-2">
-                      <ImageIcon className="w-4 h-4" /> Discovered Images
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {parsedImages.length > 0 ? (
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        {parsedImages.map((img, i) => (
-                          <div key={i} className="group relative aspect-square bg-background border border-border/40 rounded-md overflow-hidden flex items-center justify-center">
-                            <ImageIcon className="w-8 h-8 text-muted-foreground/30 absolute" />
-                            <img
-                              src={img}
-                              alt={`Image ${i + 1}`}
-                              className="w-full h-full object-cover relative z-10 opacity-80 group-hover:opacity-100 transition-opacity"
-                              loading="lazy"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-center py-8 text-muted-foreground font-mono text-sm">No images extracted.</div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            </Tabs>
+                <TabsContent value="images">
+                  <Card className="bg-card border-border/40">
+                    <CardHeader>
+                      <CardTitle className="font-mono text-sm uppercase text-muted-foreground flex items-center gap-2">
+                        <ImageIcon className="w-4 h-4" /> Discovered Images
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {parsedImages.length > 0 ? (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                          {parsedImages.map((img, i) => (
+                            <div key={i} className="group relative aspect-square bg-background border border-border/40 rounded-md overflow-hidden flex items-center justify-center">
+                              <ImageIcon className="w-8 h-8 text-muted-foreground/30 absolute" />
+                              <img src={img} alt={`Image ${i + 1}`}
+                                className="w-full h-full object-cover relative z-10 opacity-80 group-hover:opacity-100 transition-opacity"
+                                loading="lazy" />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-muted-foreground font-mono text-sm">No images extracted.</div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+              </Tabs>
+            </>
           )}
         </motion.div>
       </main>
