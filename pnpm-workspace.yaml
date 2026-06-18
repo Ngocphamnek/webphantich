@@ -70,8 +70,10 @@ autoInstallPeers: false
 
 onlyBuiltDependencies:
   - '@swc/core'
+  - '@google/genai'
   - esbuild
   - msw
+  - puppeteer
   - unrs-resolver
 
 overrides:
